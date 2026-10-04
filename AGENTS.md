@@ -8,3 +8,7 @@
 - 当前路线为 Codex 对话 + Obsidian 学习空间，不实现独立应用、小程序或云端学习数据库。
 - 宠物属于 Obsidian 学习空间，不默认使用 ChatGPT Work Pets；首版不承诺实时监听或同步语音状态。
 - 不把展示原型称为已可用软件，不凭转写评价用户实际发音。
+
+## 实际练习入口
+
+用户要求开始/继续英语练习、雅思口语或英语日记时，先读取 `.agents/skills/personal-english-coach/SKILL.md`，按其中流程调用 `coach.py`。本地 Vault 配置在忽略的 `local.settings.json`；临时私人 JSON 使用忽略的 `runtime/`，成功后删除。开发任务不自动启动练习。
