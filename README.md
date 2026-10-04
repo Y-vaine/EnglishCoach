@@ -9,3 +9,5 @@ Codex 个人英语教练 + 漂亮的 Obsidian 学习空间：职场英语、雅�
 开发验证：Python 3.10+，`python -m unittest discover -s tests -v`。无额外 Python 依赖。
 
 完整需求见 [项目方案](docs/项目方案.md)。私人学习内容保留在用户 Obsidian Vault，不进入本仓库。
+
+归档默认精简：问题、第一次回答、优化回答及两列纠错表；聊天过程不保存为逐轮流水账。

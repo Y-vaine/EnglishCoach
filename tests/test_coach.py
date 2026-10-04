@@ -12,6 +12,10 @@ class StorageTests(unittest.TestCase):
         self.c = coach.Coach(self.vault)
         self.c.init()
         self.s = self.c.start({'id':'s-test','title':'Synthetic test'})['state']
+        # Legacy-format fixture tests backward compatibility and migration safety.
+        self.s.pop('archive_format')
+        self.s.pop('lessons')
+        coach.atomic(self.c.find('s-test')[0], coach.document(self.s))
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -92,5 +96,28 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(len(result['removed_cards']),1)
         for p in self.c.base.rglob('*.md'):
             self.assertNotIn('I work on projects.',p.read_text(encoding='utf-8'))
+
+    def test_learning_format_removes_full_dialogue(self):
+        self.c.append(self.turn())
+        payload=dict(id='s-test',version=2,lessons=[dict(question='What do you do?',first_answer='I work on projects.',improved_answer='I manage projects.',corrections=[dict(original='work on',suggested='manage')])])
+        result=self.c.learn(payload)
+        p,s=self.c.find('s-test')
+        text=p.read_text(encoding='utf-8')
+        self.assertEqual(s['turns'],[])
+        self.assertNotIn('What is your next step?',text)
+        self.assertIn('| 原表达 | 建议表达 |',text)
+        self.assertTrue(self.c.learn(payload)['duplicate'])
+        with self.assertRaises(ValueError): self.c.append(self.turn())
+        with self.assertRaises(ValueError): self.c.finish(dict(id='s-test',version=3,summary='Full chat recap'))
+        self.c.redact(dict(id='s-test',version=result['state']['version'],lesson_ids=[1]))
+        self.assertNotIn('I manage projects.',p.read_text(encoding='utf-8'))
+
+    def test_new_sessions_reject_transcript_and_protect_first_answer(self):
+        s=self.c.start(dict(id='s-new'))['state']
+        with self.assertRaises(ValueError): self.c.append(dict(id='s-new',version=1,turn=self.turn()['turn']))
+        lesson=dict(question='What do you do?',first_answer='I work.',improved_answer='I manage projects.',corrections=[])
+        self.c.learn(dict(id='s-new',version=1,lessons=[lesson]))
+        lesson['first_answer']='A later retry'
+        with self.assertRaises(ValueError): self.c.learn(dict(id='s-new',version=2,lessons=[lesson]))
 
 if __name__=='__main__': unittest.main()

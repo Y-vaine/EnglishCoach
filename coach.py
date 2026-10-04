@@ -83,7 +83,16 @@ def render(state):
         lines += [f"状态：{state['status']} · 模块：{state['module']} · 角色：{state['persona']}",
                   f"记录来源：{state['source']} · 完整度：{state['completeness']}", '',
                   f"场景：{state['prompt']}", '']
-        for t in state['turns']:
+        for lesson in state.get('lessons', []):
+            lines += ['## 问题', '', lesson['question'], '', '## 我的第一次回答', '',
+                      lesson['first_answer'], '', '## 优化后的回答', '', lesson['improved_answer'], '',
+                      '*教练建议表达；不代表已完成复述。*', '', '| 原表达 | 建议表达 |', '| --- | --- |']
+            for row in lesson['corrections']:
+                def cell(value):
+                    return value.replace('|', '&#124;').replace('\n', '<br>')
+                lines.append(f"| {cell(row['original'])} | {cell(row['suggested'])} |")
+            lines.append('')
+        for t in state.get('turns', []):
             lines += [f"## 第 {t['id']} 轮", '', '**你的表达**', '', t['user'], '',
                       '**教练回应**', '', t['coach'], '',
                       f"提示使用：{'是' if t.get('hints') else '否'}", '']
@@ -156,7 +165,7 @@ class Coach:
         defaults = {
             'Profile.md': '# 我的英语成长档案\n\n职业方向：采购数字化、AI Agent、项目管理。\n\n目标：职场沟通、雅思口语、用英语表达生活。\n\n默认 15 分钟；低精力日 3–5 分钟。\n\n## 待了解\n\n当前水平、雅思目标与时间、喜欢的称呼。\n',
             'Companion.md': '# 你的学习伙伴 Momo\n\n![[EnglishCoach/Assets/cat-welcome.svg|200]]\n\n我会陪你慢慢说。今天的一句话，也值得被记住。\n\n完成练习后更新小猫状态；中断不会扣分。\n',
-            'Templates/Session.md': '# 练习记录\n\n场景 → 我的表达 → 教练回应 → 再次表达 → 总结。\n\n工具自动生成正式记录。个人补充请写在“我的补充”下。\n',
+            'Templates/Session.md': '# 学习成果\n\n## 问题\n\n## 我的第一次回答\n\n## 优化后的回答\n\n教练建议表达，不代表已完成复述。\n\n| 原表达 | 建议表达 |\n| --- | --- |\n\n工具只保存重点成果，不保存逐轮聊天。个人补充请写在“我的补充”下。\n',
         }
         for name, content in defaults.items():
             p = self.base / name
@@ -204,13 +213,15 @@ class Coach:
                      persona=data.get('persona', 'friend' if module == 'journal' else 'coach'),
                      source=data.get('source', 'codex-text'), completeness=data.get('completeness', 'partial'),
                      prompt=data.get('prompt', SCENARIOS[now().date().toordinal() % 6][1]),
-                     status='in_progress', turns=[], summary='')
+                     status='in_progress', archive_format='learning', lessons=[], turns=[], summary='')
         atomic(path, document(state))
         self.home()
         return {'path': str(path), 'state': state}
 
     def append(self, data):
         p, s = self.find(data['id'])
+        if s.get('archive_format') == 'learning':
+            raise ValueError('精简记录使用 learn 保存成果，不保存逐轮对话。')
         if s['status'] == 'completed':
             raise ValueError('练习已结束')
         turn = data['turn']
@@ -231,8 +242,50 @@ class Coach:
         self.home()
         return {'ok': True, 'state': s}
 
+    def learn(self, data):
+        p, s = self.find(data['id'])
+        if s['kind'] != 'session':
+            raise ValueError('需要练习 ID')
+        lessons = data['lessons']
+        if not isinstance(lessons, list) or not 1 <= len(lessons) <= 3:
+            raise ValueError('仅保存 1–3 个重点问题，不保存所有对话轮次')
+        clean = []
+        for lesson in lessons:
+            item = {}
+            for field in ('question', 'first_answer', 'improved_answer'):
+                if not isinstance(lesson.get(field), str) or not lesson[field].strip():
+                    raise ValueError(f'{field} 必须是非空文本')
+                item[field] = lesson[field]
+            rows = lesson.get('corrections', [])
+            if not isinstance(rows, list):
+                raise ValueError('corrections 必须为列表')
+            item['corrections'] = []
+            for row in rows:
+                if any(not isinstance(row.get(k), str) or not row[k].strip() for k in ('original', 'suggested')):
+                    raise ValueError('纠错需要 original/suggested 文本')
+                item['corrections'].append({k:row[k] for k in ('original', 'suggested')})
+            clean.append(item)
+        if s.get('archive_format') == 'learning' and s.get('lessons') == clean:
+            return {'ok':True, 'duplicate':True, 'state':s}
+        if s.get('archive_format') == 'learning':
+            for old, new in zip(s['lessons'], clean):
+                if old['question'] == new['question'] and old['first_answer'] != new['first_answer']:
+                    raise ValueError('不得把复述覆盖为第一次回答')
+        s['archive_format'] = 'learning'
+        s['lessons'] = clean
+        s['turns'] = []
+        s['summary'] = ''
+        s['prompt'] = clean[0]['question']
+        if data.get('source'):
+            s['source'] = data['source']
+        update(p, s, data['version'])
+        self.home()
+        return {'ok':True, 'path':str(p), 'state':s}
+
     def finish(self, data):
         p, s = self.find(data['id'])
+        if s.get('archive_format') == 'learning' and data.get('summary', ''):
+            raise ValueError('精简成果不附加聊天总结；请用 learn 更新优化回答和纠错表。')
         if s['status'] == 'completed':
             if s['summary'] != data['summary']:
                 raise ValueError('已结束的总结不同，未覆盖')
@@ -285,11 +338,15 @@ class Coach:
         p, s = self.find(data['id'])
         if s['kind'] != 'session':
             raise ValueError('需要练习 ID')
-        ids = data['turn_ids']
+        ids = data.get('lesson_ids') if s.get('archive_format') == 'learning' else data.get('turn_ids')
         if not isinstance(ids, list) or not ids or any(not isinstance(i, int) for i in ids):
-            raise ValueError('需要明确要排除的轮次 ID 列表')
-        if not set(ids).issubset({t['id'] for t in s['turns']}):
+            raise ValueError('需要明确要排除的重点问题/旧轮次 ID 列表')
+        available = set(range(1, len(s.get('lessons', []))+1)) if s.get('archive_format') == 'learning' else {t['id'] for t in s['turns']}
+        if not set(ids).issubset(available):
             raise ValueError('轮次不存在')
+        if s.get('archive_format') == 'learning':
+            for identity in ids:
+                s['lessons'][identity-1] = dict(question='[按要求不留存]', first_answer='[按要求不留存]', improved_answer='[衍生成果已清除]', corrections=[])
         # Clear all session-derived material: a summary/card can incorporate any turn.
         for t in s['turns']:
             if t['id'] in ids:
@@ -355,6 +412,8 @@ class Coach:
         text = '# 最近七天的成长\n\n' + f'完成练习：{len(completed)} 次。\n\n'
         for s in completed:
             text += f"## {s['title']} · {s['created'][:10]}\n\n{s['summary']}\n\n"
+            for lesson in s.get('lessons', []):
+                text += f"问题：{lesson['question']}\n\n优化表达：{lesson['improved_answer']}\n\n"
         text += '尚未进行同题前后对比时，不推断流利度提升。\n'
         p = self.base / 'Weekly' / 'Overview.md'
         if p.exists():
@@ -370,7 +429,7 @@ class Coach:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['init','context','start','append','finish','card','review','redact','home','weekly','read'])
+    parser.add_argument('command', choices=['init','context','start','append','learn','finish','card','review','redact','home','weekly','read'])
     parser.add_argument('--vault')
     parser.add_argument('--input', help='UTF-8 JSON payload; use ignored runtime/ for private data')
     parser.add_argument('--id')
@@ -382,7 +441,7 @@ def main():
         with lock(coach.base):
             if args.command == 'read':
                 p,s=coach.find(args.id); result={'path':str(p),'state':s}
-            elif args.command in ('start','append','finish','card','review','redact'):
+            elif args.command in ('start','append','learn','finish','card','review','redact'):
                 result=getattr(coach,args.command)(data)
             else:
                 result=getattr(coach,args.command)() or {'ok':True}
