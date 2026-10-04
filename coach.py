@@ -53,9 +53,6 @@ def lock(base):
     path = base / '.englishcoach.lock'
     f = path.open('a+b')
     f.seek(0)
-    if not f.read(1):
-        f.write(b'0'); f.flush()
-    f.seek(0)
     try:
         if os.name == 'nt':
             import msvcrt
@@ -67,9 +64,17 @@ def lock(base):
         f.close()
         raise ValueError('另一项保存正在进行，请稍后重试。')
     try:
+        if os.fstat(f.fileno()).st_size == 0:
+            f.write(b'0')
+            f.flush()
         yield
     finally:
-        f.close()
+        try:
+            if os.name == 'nt':
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            f.close()
 
 def render(state):
     kind = state['kind']
